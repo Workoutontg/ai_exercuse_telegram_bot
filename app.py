@@ -10,11 +10,11 @@ import os
 load_dotenv()
 
 # API Keys
-OPNEAI_API_KEY = os.getenv('OPNEAI_API_KEY')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-openai.api_key = OPNEAI_API_KEY
+openai.api_key = OPENAI_API_KEY
 
 # Available languages
 languages = {
@@ -113,9 +113,6 @@ async def generate_workout_with_youtube(fitness_level: str, duration: int) -> st
         # Parse the JSON response
         try:
             workout_list = json.loads(res_json_str)
-            print("====================Res Json Start==========================")
-            print(workout_list)
-            print("====================Res Json End==========================")
 
         except json.JSONDecodeError as e:
             print(f"JSON parsing error: {e}")
@@ -130,9 +127,6 @@ async def generate_workout_with_youtube(fitness_level: str, duration: int) -> st
             video_url = fetch_youtube_video(query) if query else "No video found."
 
             exercise["video_url"] = video_url
-            print("====================video_url Start==========================")
-            print(video_url)
-            print("====================video_url End==========================")
 
             formatted_workout.append(exercise)
 
