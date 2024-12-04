@@ -1,18 +1,20 @@
-import openai
-from googleapiclient.discovery import build
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import json
-from dotenv import load_dotenv
 import os
+from http import HTTPStatus
+
+import openai
+import requests
+from dotenv import load_dotenv
+from selectolax.parser import HTMLParser
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 # Load environment variables from the .env file
 load_dotenv()
 
 # API Keys
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 openai.api_key = OPENAI_API_KEY
 
@@ -39,14 +41,12 @@ fitness_levels = [
     "Very fit",
 ]
 
+
 # Helper function to translate text
 def translate_text(text: str, target_lang: str) -> str:
     try:
         # Define the system prompt for translation
-        prompt = (
-            f"Translate the following text to {target_lang}:\n\n"
-            f"{text}"
-        )
+        prompt = f"Translate the following text to {target_lang}:\n\n" f"{text}"
 
         # Call OpenAI API
         response = openai.ChatCompletion.create(
@@ -63,30 +63,62 @@ def translate_text(text: str, target_lang: str) -> str:
         print(f"Error during translation: {e}")
         return text
 
+
 # Function to fetch user's language preference
 def get_user_language(chat_id: int) -> str:
     return user_data.get(chat_id, {}).get("language", "en")
 
+
 # Function to fetch videos using YouTube Data API
-def fetch_youtube_video(query):
-    """Fetch a YouTube video link using the YouTube Data API."""
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-    request = youtube.search().list(
-        q=query,
-        part="snippet",
-        maxResults=1,
-        type="video"
-    )
-    response = request.execute()
+def fetch_youtube_video(_query: str) -> str:
+    """Search YouTube videos by keyword without API."""
+    def get_youtube_response(_query: str) -> str:
+        """
+        Get the HTML response of a YouTube search page.
 
-    # Extract the video link
-    if response["items"]:
-        video_id = response["items"][0]["id"]["videoId"]
-        return f"https://www.youtube.com/watch?v={video_id}"
-    else:
-        return "No video found for this query."
+        Params:
+            _query: The search query.
+        """
+        base_url = "https://www.youtube.com/results"
+        params = {"search_query": _query}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        }
+        response = requests.get(base_url, params=params, headers=headers)
+        if response.status_code != HTTPStatus.OK:
+            raise Exception(f"Failed to fetch YouTube data. Status code: {response.status_code}")
+        return response.text
 
-async def generate_workout_with_youtube(fitness_level: str, duration: int) -> str:
+    def _get_json_from_scripts(_parser: HTMLParser) -> dict:
+        """
+        Extracts the main JSON object and the player info JSON object from the HTML content of the video page.
+        Params:
+            _parser: The HTML parser object containing the video page's HTML content.
+        """
+        MAIN_SCRIPT_START_TEXT = "var ytInitialData = "
+        main_json = {}
+        scripts = _parser.css("script")
+        for script in scripts:
+            text = script.text()
+            if main_json:
+                break
+            if not main_json and MAIN_SCRIPT_START_TEXT in text:
+                main_json = json.loads(text.split(MAIN_SCRIPT_START_TEXT)[1].strip(";"))
+        return main_json
+
+    html = get_youtube_response(_query)
+
+    parser = HTMLParser(html)
+    main_script = _get_json_from_scripts(parser)
+    video = main_script["contents"]["twoColumnSearchResultsRenderer"]["primaryContents"]["sectionListRenderer"][
+        "contents"
+    ][0]["itemSectionRenderer"]["contents"][1]["videoRenderer"]
+
+    return f"https://www.youtube.com/watch?v={video['videoId']}"
+
+
+async def generate_workout_with_youtube(fitness_level: str, duration: int) -> list[dict] | str:
     """Generate a workout plan and fetch valid YouTube links using YouTube Data API."""
 
     # Prompt for GPT-4
@@ -100,7 +132,7 @@ async def generate_workout_with_youtube(fitness_level: str, duration: int) -> st
                 "query": "A short query to find a relevant YouTube video"
             }
         ]"""
-        
+
     try:
         # Call the OpenAI API
         response = openai.ChatCompletion.create(
@@ -136,6 +168,7 @@ async def generate_workout_with_youtube(fitness_level: str, duration: int) -> st
         print(f"Error generating workout plan: {e}")
         return "An error occurred while generating the workout plan. Please try again later."
 
+
 # Telegram bot handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Welcome the user and ask for the language."""
@@ -157,6 +190,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = "Please choose your language:"
     await update.message.reply_text(message, reply_markup=reply_markup)
 
+
 async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Store the language and ask for fitness level."""
     query = update.callback_query
@@ -168,14 +202,13 @@ async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_data[chat_id]["language"] = languages[selected_language]
 
     # Translate the next question
-    fitness_question = translate_text(
-        "How would you describe your fitness level?", languages[selected_language]
-    )
+    fitness_question = translate_text("How would you describe your fitness level?", languages[selected_language])
     reply_markup = InlineKeyboardMarkup.from_column(
         [InlineKeyboardButton(level, callback_data=f"fitness_{level}") for level in fitness_levels]
     )
 
     await query.edit_message_text(fitness_question, reply_markup=reply_markup)
+
 
 async def fitness_level_selected(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Store the fitness level."""
@@ -194,6 +227,7 @@ async def fitness_level_selected(update: Update, context: ContextTypes.DEFAULT_T
     )
 
     await query.edit_message_text(duration_question)
+
 
 async def session_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle session duration input and generate a workout."""
@@ -233,6 +267,7 @@ async def session_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         error_message = translate_text("Please enter a valid number.", user_lang)
         await update.message.reply_text(error_message)
 
+
 async def update_preferences(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Allow user to update their preferences."""
     chat_id = update.effective_chat.id
@@ -247,6 +282,7 @@ async def update_preferences(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text(update_message, reply_markup=reply_markup)
 
+
 async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle specific updates."""
     query = update.callback_query
@@ -256,9 +292,7 @@ async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if query.data == "update_language":
         # Translate the language selection prompt
-        language_prompt = translate_text(
-            "Please choose your new language:", user_lang
-        )
+        language_prompt = translate_text("Please choose your new language:", user_lang)
 
         # Show language options
         keyboard = [
@@ -278,11 +312,12 @@ async def handle_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Reuse the fitness level selection flow
         await fitness_level_selected(update, context)
 
+
 # Main function to run the bot
 def main() -> None:
     """Run the bot."""
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("update", update_preferences))
     application.add_handler(CallbackQueryHandler(language_selected, pattern="^language_"))
@@ -291,5 +326,6 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, session_duration))
 
     application.run_polling()
+
 
 main()
